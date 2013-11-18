@@ -43,29 +43,39 @@ function XPComInit() {
    
   var SelectionHandler = {
     init: function sh_init() {
-      var cp = copyPaste(content.document.defaultView,
-        content.document);
-      
       debug('Init called', {
         hasContent: typeof content,
-        location: content.document.location+'',
-        cp: typeof cp
+        location: content.document.location+''
       });
       
       var els = Cc["@mozilla.org/eventlistenerservice;1"]
                   .getService(Ci.nsIEventListenerService);
-  
-      ['mousedown', 'touchstart', 'click'].forEach(function(type) {
+      
+      var addEv = function(target, type, handler) {
+        debug('Registered hadnler for ' + type)
         // Using the system group for mouse/touch events to avoid
         // missing events if .stopPropagation() has been called.
-        els.addSystemEventListener(content.document, type,
+        els.addSystemEventListener(target, 
+                                  type,
                                   function() {
-                                    debug('I has event', type);
+                                    debug('Handling event', type)
+                                    handler.apply(this, arguments);
                                   },
                                   /* useCapture = */ false);
-      });
+      };
       
-      cp.init()
+      var removeEv = function(target, type, handler) {
+        els.removeSystemEventListener(target, 
+                                  type,
+                                  handler,
+                                  /* useCapture = */ false);
+      };
+      
+      content.document.addEventListener('DOMContentLoaded', function() {
+        debug('DOMContentLoaded happened in XPCom');
+        var cp = copyPaste(content.document.defaultView, content.document, addEv, removeEv);
+        cp.init();
+      });
     }
   };
   
@@ -75,12 +85,20 @@ function XPComInit() {
 function BrowserInit() {
   document.addEventListener('DOMContentLoaded', function() {
     debug('File loaded: running in browser');
-    var cp = copyPaste(window, document);
+    var addEv = function(target, type, handler) {
+      target.addEventListener(type, handler);
+    };
+    
+    var removeEv = function(target, type, handler) {
+      target.removeEventListener(type, handler);
+    };
+    
+    var cp = copyPaste(window, document, addEv, removeEv);
     cp.init();
   });
 }
 
-var copyPaste = function(win, doc) {
+var copyPaste = function(win, doc, addEvent, removeEvent) {
 
   var KNOB_SIZE = 17;
   
@@ -99,7 +117,7 @@ var copyPaste = function(win, doc) {
   var INTERACT_DELAY = 700;
   var INIT_MOVE_LIMIT = 50;
   
-  var container = document.createElement('div');
+  var container = doc.createElement('div');
   
   /**
    * Copy/Paste base class
@@ -114,9 +132,9 @@ var copyPaste = function(win, doc) {
   
   Clipboard.prototype = {
     init: function() {
-      win.addEventListener(this.START, this.onStart.bind(this));
-      win.addEventListener(this.MOVE, this.onMove.bind(this));
-      win.addEventListener(this.END, this.onEnd.bind(this));
+      addEvent(win, this.START, this.onStart.bind(this));
+      addEvent(win, this.MOVE, this.onMove.bind(this));
+      addEvent(win, this.END, this.onEnd.bind(this));
       
       container.id = 'clipboard-container';
       doc.body.appendChild(container);
@@ -172,14 +190,17 @@ var copyPaste = function(win, doc) {
       var target = this.startE.target;
   
       if (target instanceof win.HTMLInputElement) {
+        debug('target is input')
         this.strategy = new HtmlInputStrategy(target);
       } else if (target instanceof win.HTMLTextAreaElement) {
+        debug('target is ta')
         this.strategy = new HtmlInputStrategy(target);
       } else {
+        debug('target is content')
         this.strategy = new HtmlContentStrategy(target);
       }
   
-      this.strategy.initialSelection();
+      this.strategy.initialSelection(this.startXY);
   
       // Get the region of the selection
       var targetArea = this.strategy.getRegion();
@@ -213,7 +234,7 @@ var copyPaste = function(win, doc) {
       }
       this.optionsEl.innerHTML = actions.join('');
   
-      this.optionsEl.addEventListener(this.START, this);
+      addEvent(this.optionsEl, this.START, this.handleEvent.bind(this));
   
       container.appendChild(this.optionsEl);
       this.positionMenu();
@@ -232,6 +253,7 @@ var copyPaste = function(win, doc) {
      * Called when a user clicks on the menu
      */
     handleEvent: function(e) {
+      debug('handlEvent for copy/paste/whatever', e.target.dataset.action)
       e.stopPropagation();
       e.preventDefault();
   
@@ -298,7 +320,7 @@ var copyPaste = function(win, doc) {
         offsetX: pos.offsetX
       });
   
-      this[knob].element.addEventListener(this.START, function(origEvt) {
+      addEvent(this[knob].element, this.START, function(origEvt) {
   
         this[knob].element.classList.add('moving');
         this.optionsEl.classList.add('moving');
@@ -307,9 +329,9 @@ var copyPaste = function(win, doc) {
         origEvt.preventDefault();
   
         var mover = this.getKnobMover(name);
-        win.addEventListener(this.MOVE, mover);
-        win.addEventListener(this.END, function() {
-          win.removeEventListener(this.MOVE, mover);
+        addEvent(win, this.MOVE, mover);
+        addEvent(win, this.END, function() {
+          removeEvent(win, this.MOVE, mover);
           if (this[knob]) {
             this[knob].element.classList.remove('moving');
           }
@@ -410,8 +432,6 @@ var copyPaste = function(win, doc) {
       );
   
       clipboard.modify(content);
-      
-      this.sel.removeAllRanges();
     },
   
     cut: function(clipboard) {
@@ -419,8 +439,6 @@ var copyPaste = function(win, doc) {
       this.node.value = this.node.value
         .substring(0, this.node.selectionStart) +
         this.node.value.substring(this.node.selectionEnd);
-      
-      this.sel.removeAllRanges();
     },
   
     paste: function(clipboard) {
@@ -434,7 +452,7 @@ var copyPaste = function(win, doc) {
      * Creates the initial selection
      * It should be whatever word you were focused on
      */
-    initialSelection: function() {
+    initialSelection: function(startXY) {
       debug('initialSelection')
       var value = this.node.value;
   
@@ -669,12 +687,12 @@ var copyPaste = function(win, doc) {
      * Creates the initial selection
      * This is currently the entire elemtn
      */
-    initialSelection: function() {
+    initialSelection: function(startXY) {
   
       var directions = ['left', 'right'];
   
-      this.extendLeft('word')
-      this.extendRight('word')
+      this.extendLeft('word', startXY)
+      this.extendRight('word', startXY)
     },
   
     /**
@@ -687,7 +705,7 @@ var copyPaste = function(win, doc) {
       var end = doc.caretPositionFromPoint(right.cursorX, right.cursorY);
       
       var switched = false;
-      var sr = document.createRange();
+      var sr = doc.createRange();
       sr.setStart(start.offsetNode, start.offset);
       sr.setEnd(start.offsetNode, start.offset);
       if (sr.comparePoint(end.offsetNode, end.offset) === -1) {
@@ -772,10 +790,30 @@ var copyPaste = function(win, doc) {
     /**
      * Extends the left selection bound
      */
-    extendLeft: function(magnitude) {
+    extendLeft: function(magnitude, startXY) {
       magnitude = magnitude || 'character';
   
       var sel = this.sel;
+      
+      debug('extendLeft call, i has sel?', {
+        sel: !!sel,
+        anchorNode: sel.anchorNode,
+        anchorOffset: sel.anchorOffset
+      });
+      
+      if (!sel.anchorNode && startXY) {
+        var start = doc.caretPositionFromPoint(startXY.x, startXY.y);
+        if (!start) {
+          return;
+        }
+      
+        var sr = doc.createRange();
+        sr.setStart(start.offsetNode, start.offset);
+        sr.setEnd(start.offsetNode, start.offset);
+  
+        sel.removeAllRanges();
+        sel.addRange(sr);
+      }
   
       // modify() works on the focus of the selection
       var endNode = sel.focusNode;

@@ -5,11 +5,13 @@
 
 #clipboard-container {
   font-size: 10px;
+  z-index: 99999;
 }
 
 .knob {
   display: border-box;
   position: absolute;
+  z-index: 100000;
 }
 
 .knob.left {
