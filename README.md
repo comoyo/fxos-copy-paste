@@ -1,11 +1,13 @@
 fxos-copy-paste
 ===============
 
-XPCom plugin for Firefox OS to add selections and copy-paste.
+XPCom plugin for Firefox OS to add selections and copy-paste. It has three implementations so far:
 
-Heavily inspired by https://github.com/KevinGrandon/Firefox-OS-Clipboard of course.
+* Basic working Copy & Paste based off of https://github.com/KevinGrandon/Firefox-OS-Clipboard. Can run as frame script.
+* Start of stand-alone version of Kevins version for selections.
+* Android version of SelectionHandler with some glue to make it work in FxOS (very WIP).
 
-## How to run in FxOS
+## How to run basic working Copy & Paste in FxOS
 
 Currently only runs in FF Nightly.
 
@@ -15,6 +17,6 @@ Apply the changes in `bootstrap.js` from https://github.com/comoyo/gaia/compare/
 
 Make normal `DEBUG=1` build.
 
-## How to run stand-alone
+### How to run stand-alone
 
 Open index.html

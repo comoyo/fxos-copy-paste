@@ -73,3 +73,8 @@
 #clipboard-menu li:last-child {
   border-right: 0;
 }
+
+.caret {
+  position: fixed;
+  border: solid 1px red;
+}
