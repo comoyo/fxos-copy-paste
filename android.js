@@ -226,6 +226,7 @@ var SelectionHandler = {
     }
 
     let selection = this._getSelection();
+    dump('startSelection has selection ' + (selection && selection.rangeCount) + '\n');
     // If the range didn't have any text, let's bail
     if (!selection || selection.rangeCount == 0) {
       this._deactivate();
@@ -417,10 +418,10 @@ var SelectionHandler = {
       let editorBounds = this._domWinUtils.sendQueryContentEvent(this._domWinUtils.QUERY_EDITOR_RECT, 0, 0, 0, 0);
       // the return value from sendQueryContentEvent is in LayoutDevice pixels and we want CSS pixels, so
       // divide by the pixel ratio
-      let editorRect = new Rect(editorBounds.left / window.devicePixelRatio,
-                                editorBounds.top / window.devicePixelRatio,
-                                editorBounds.width / window.devicePixelRatio,
-                                editorBounds.height / window.devicePixelRatio);
+      let editorRect = new Rect(editorBounds.left / this._contentWindow.devicePixelRatio,
+                                editorBounds.top / this._contentWindow.devicePixelRatio,
+                                editorBounds.width / this._contentWindow.devicePixelRatio,
+                                editorBounds.height / this._contentWindow.devicePixelRatio);
 
       // Use intersection of the text rect and the editor rect
       let rect = new Rect(textBounds.left, textBounds.top, textBounds.width, textBounds.height);
@@ -562,7 +563,11 @@ var SelectionHandler = {
   // param to decide whether the selection has been reversed.
   _updateCacheForSelection: function sh_updateCacheForSelection(aIsStartHandle) {
     let selection = this._getSelection();
+    dump('Android.js has selection? ' + !!selection + '\n');
+    let range = selection.getRangeAt(0);
+    dump('Android.js has range? ' + JSON.stringify({start: range.startOffset, end: range.endOffset}) + '\n');
     let rects = selection.getRangeAt(0).getClientRects();
+    dump('Android.js has clientrects? ' + rects.length + '\n');
     let start = { x: this._isRTL ? rects[0].right : rects[0].left, y: rects[0].bottom };
     let end = { x: this._isRTL ? rects[rects.length - 1].left : rects[rects.length - 1].right, y: rects[rects.length - 1].bottom };
 
@@ -587,6 +592,7 @@ var SelectionHandler = {
     let checkHidden = function(x, y) {
       return false;
     };
+    dump('getHandlePositions im in frameElement? ' + this._contentWindow.frameElement);
     if (this._contentWindow.frameElement) {
       let bounds = this._contentWindow.frameElement.getBoundingClientRect();
       checkHidden = function(x, y) {
@@ -601,8 +607,16 @@ var SelectionHandler = {
       let cursor = this._domWinUtils.sendQueryContentEvent(this._domWinUtils.QUERY_CARET_RECT, this._targetElement.selectionEnd, 0, 0, 0);
       // the return value from sendQueryContentEvent is in LayoutDevice pixels and we want CSS pixels, so
       // divide by the pixel ratio
-      let x = cursor.left / window.devicePixelRatio;
-      let y = (cursor.top + cursor.height) / window.devicePixelRatio;
+      dump('cursorInfo ' + JSON.stringify({ 
+          left: cursor.left, 
+          top: cursor.top, 
+          height: cursor.height, 
+          dpr: this._contentWindow.devicePixelRatio,
+          scrollX: scroll.X,
+          scrollY: scroll.Y
+      }) + '\n');
+      let x = cursor.left / this._contentWindow.devicePixelRatio;
+      let y = (cursor.top + cursor.height) / this._contentWindow.devicePixelRatio;
       return [{ handle: this.HANDLE_TYPE_MIDDLE,
                 left: x + scroll.X,
                 top: y + scroll.Y,

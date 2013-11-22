@@ -20,3 +20,7 @@ Make normal `DEBUG=1` build.
 ### How to run stand-alone
 
 Open index.html
+
+## Changes I made in android.js
+
+* Replace all `window.devicePixelRatio` by `this._contentWindow.devicePixelRatio`.

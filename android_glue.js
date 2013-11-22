@@ -6,11 +6,11 @@
 
 var inXPCom = !(typeof Components === 'undefined' ||
   typeof Components.utils === 'undefined');
- 
+
 function debug() {
   // Prefer dump, but also needs to run in browser environment
   if (inXPCom) {
-    dump('==SectionHandler debug: ' +
+    dump('==AndroidSelectionHandler: ' +
       [].slice.call(arguments).map(function(a) {
         return JSON.stringify(a, null, 4);
       }).join(' ') + '\n');
@@ -42,13 +42,11 @@ function XPComInit() {
               .getService(Ci.nsIEventListenerService);
   
   var addEv = function(target, type, handler) {
-    debug('Registered hadnler for ' + type);
     // Using the system group for mouse/touch events to avoid
     // missing events if .stopPropagation() has been called.
     els.addSystemEventListener(target, 
                               type,
                               function() {
-                                debug('Handling event', type);
                                 handler.apply(this, arguments);
                               },
                               /* useCapture = */ false);
@@ -88,21 +86,121 @@ if (inXPCom) {
 else {
   BrowserInit();
 }
+var BrowserApp = {
+  deck: {
+    addEventListener: function(n) {
+      debug('BrowserApp.deck.addEventListener', n);
+    },
+    removeEventListener: function(n) {
+      debug('BrowserApp.deck.removeEventListener', n);
+    }
+  },
+  selectedBrowser: {
+    contentWindow: content.document.defaultView
+  }
+};
 
+var sendMessageToJava = function(msg) {
+  debug('sendMessageToJava', msg);
+  
+  eventbus.emit(msg.type, msg);
+};
 
 function selectionGlue(win, doc, addEv, removeEv) {
+  function Handle() {
+    var self = this;
+    
+    this._el = (function() {
+      var e = doc.createElement('div');
+      e.classList.add('handle');
+      e.style = 'position: absolute; background: green; width: 5px; height: 10px; z-index: 99999';
+      e.style.display = 'none';
+      doc.body.appendChild(e);
+      return e;
+    })();
+
+    this.show = function() {
+      self._el.style.display = 'block';
+    };
+    
+    this.hide = function() {
+      self._el.style.display = 'none';
+    };
+    
+    this.setPosition = function(x, y) {
+      debug('setPosition', '"' + x + 'px"', y);
+      self._el.style.left = x + 'px';
+      self._el.style.top = y + 'px';
+    };
+  }
   
-  var eventbus = new EventEmitter();
+  var handles = {
+    'START': new Handle(),
+    'MIDDLE': new Handle(),
+    'END': new Handle()
+  };
   
   // === Glue between browser & SelectionHandler (in Android this lives in mobile/android/chrome/browser.js ===
-  eventbus.on('longtap', function(e) {
-    if (SelectionHandler.canSelect(e.target)) {
-      SelectionHandler.startSelection(e.target, e.startX, e.startY);
+  eventbus.on('tap', function(e) {
+    debug('tap happened');
+    
+    var element = e.target;
+    if (!element.disabled &&
+        ((element instanceof win.HTMLInputElement && element.mozIsTextField(false)) ||
+        (element instanceof win.HTMLTextAreaElement))) {
+      debug('Ill be attaching my caret');
+      SelectionHandler.attachCaret(element);
     }
   });
+  
+  eventbus.on('TextSelection:ShowHandles', function(e) {
+    debug('Showing', e.handles);
+    if (!e.handles) e.handles = ['START', 'MIDDLE', 'END'];
+    
+    e.handles.map(function(n) {
+      return handles[n];
+    }).forEach(function(handle) {
+      handle.show();
+    });
+  });
+  
+  eventbus.on('TextSelection:HideHandles', function(e) {
+    debug('Hiding', e.handles);
+    if (!e.handles) e.handles = ['START', 'MIDDLE', 'END']; // hide all
+    
+    e.handles.map(function(n) {
+      return handles[n];
+    }).forEach(function(handle) {
+      handle.hide();
+    });
+  });
+  
+  /*
+      "type": "TextSelection:PositionHandles",    "positions": [
+        {
+            "handle": "MIDDLE",
+            "left": 51,            "top": 134,
+            "hidden": false
+        }
+    ],
+    "rtl": false
+    */
+  eventbus.on('TextSelection:PositionHandles', function(e) {
+    debug('PositionHandle', e.positions);
+    if (e.rtl) {
+      debug('!!! Need to implement RTL!');
+    }
+    e.positions.forEach(function(pos) {
+      var handle = handles[pos.handle];
+      handle.setPosition(pos.left, pos.top);
+      pos.hidden ? handle.hide() : handle.show();
+    });
+  });
+  
+  // === Other glueeee
 
   // Longtap handler
-  (function () {
+  function tapHandler(eventName, timeout) {
     var touchTimeout; // when did touch start start?
     var startX, startY, target;
     
@@ -113,16 +211,16 @@ function selectionGlue(win, doc, addEv, removeEv) {
       target = e.touches[0].target;
       
       // is target contenteditable or an input field we continue
-      if (!(target.isContentEditable ||
-          target.designMode == "on" ||
-          target instanceof HTMLInputElement ||
-          target instanceof HTMLTextAreaElement)) {
-        return;
-      }
+      // if (!(target.isContentEditable ||
+      //     target.designMode == "on" ||
+      //     target instanceof HTMLInputElement ||
+      //     target instanceof HTMLTextAreaElement)) {
+      //   return;
+      // }
       
-      touchTimeout = setTimeout(function() {
-        eventbus.emit('longtap', { target: target, clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
-      }, 400);
+      touchTimeout = win.setTimeout(function() {
+        eventbus.emit(eventName, { target: target, clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
+      }, timeout);
       startX = e.touches[0].pageX;
       startY = e.touches[0].pageY;
     });
@@ -133,14 +231,17 @@ function selectionGlue(win, doc, addEv, removeEv) {
       if (Math.abs(e.touches[0].pageX - startX) > 10 ||
           Math.abs(e.touches[0].pageY - startY) > 10 ||
           e.touches[0].target !== target) {
-        clearTimeout(touchTimeout);
+        win.clearTimeout(touchTimeout);
       }
     });
     
     addEv(doc.body, 'touchend', function() {
-      clearTimeout(touchTimeout);
+      win.clearTimeout(touchTimeout);
     });
-  })();
+  }
+  
+  tapHandler('longtap', 400);
+  tapHandler('tap', 100);
   
 }
 
@@ -604,3 +705,6 @@ var EventEmitter = (function () {
 
 	return EventEmitter;
 })();
+
+var eventbus = new EventEmitter();
+  
