@@ -175,6 +175,9 @@ var SelectionHandler = {
   },
 
   _getScrollPos: function sh_getScrollPos() {
+    if (!this._contentWindow) {
+      return dump('\n\n\n\n_getScrollPos called without contentWindow ' + JSON.stringify(Object.keys(this)) + '\n');
+    }
     // Get the current display position
     let scrollX = {}, scrollY = {};
     this._contentWindow.top.QueryInterface(Ci.nsIInterfaceRequestor).
@@ -226,7 +229,6 @@ var SelectionHandler = {
     }
 
     let selection = this._getSelection();
-    dump('startSelection has selection ' + (selection && selection.rangeCount) + '\n');
     // If the range didn't have any text, let's bail
     if (!selection || selection.rangeCount == 0) {
       this._deactivate();
@@ -290,6 +292,7 @@ var SelectionHandler = {
     this._contentWindow.addEventListener("blur", this, true);
 
     this._activeType = this.TYPE_CURSOR;
+    dump('Setting _activeType to TYPE_CURSOR ' + this._activeType + ' ' + this + ' ' + (this === SelectionHandler) + '\n');
     this._positionHandles();
 
     sendMessageToJava({
@@ -410,7 +413,7 @@ var SelectionHandler = {
     // stays within the bounds of the field
     if (this._activeType == this.TYPE_CURSOR) {
       // Get rect of text inside element
-      let range = document.createRange();
+      let range = this._contentWindow.document.createRange();
       range.selectNodeContents(this._targetElement.QueryInterface(Ci.nsIDOMNSEditableElement).editor.rootElement);
       let textBounds = range.getBoundingClientRect();
 
@@ -451,9 +454,25 @@ var SelectionHandler = {
       // Send mouse event 1px too high to prevent selection from entering the line below where it should be
       aY -= 1;
     }
+    
+    // sendMouseEventToWindow fakes a mouse event. The thing is that it only works if there is no chrome
+    var adjustX = this._contentWindow.mozInnerScreenX - this._contentWindow.screenX;
+    var adjustY = this._contentWindow.mozInnerScreenY - this._contentWindow.screenY;
+    dump('sending fake mouseevent adjust ' + adjustX + ' ' + adjustY + '\n');
+    if (adjustY === 22) { // b2g desktop @ osx
+      adjustY = 0;
+    }
+    
+    dump('before adjustment ' + aX + ' ' + aY + '\n');
+    
+    aX -= adjustX - 2; // todo: find out what works :p
+    aY -= adjustY - 2;
+    
+    
+    dump('fake event to ' + aX + ' ' + aY + '\n');
 
-    this._domWinUtils.sendMouseEventToWindow("mousedown", aX, aY, 0, 0, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
-    this._domWinUtils.sendMouseEventToWindow("mouseup", aX, aY, 0, 0, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
+    this._domWinUtils.sendMouseEvent("mousedown", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
+    this._domWinUtils.sendMouseEvent("mouseup", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
   },
 
   copySelection: function sh_copySelection() {
@@ -518,6 +537,7 @@ var SelectionHandler = {
   },
 
   _deactivate: function sh_deactivate() {
+    dump('Deactivate called\n');
     this._activeType = this.TYPE_NONE;
 
     sendMessageToJava({ type: "TextSelection:HideHandles" });
@@ -536,7 +556,7 @@ var SelectionHandler = {
   _getViewOffset: function sh_getViewOffset() {
     let offset = { x: 0, y: 0 };
     let win = this._contentWindow;
-
+    
     // Recursively look through frames to compute the total position offset.
     while (win.frameElement) {
       let rect = win.frameElement.getBoundingClientRect();
@@ -563,11 +583,8 @@ var SelectionHandler = {
   // param to decide whether the selection has been reversed.
   _updateCacheForSelection: function sh_updateCacheForSelection(aIsStartHandle) {
     let selection = this._getSelection();
-    dump('Android.js has selection? ' + !!selection + '\n');
     let range = selection.getRangeAt(0);
-    dump('Android.js has range? ' + JSON.stringify({start: range.startOffset, end: range.endOffset}) + '\n');
     let rects = selection.getRangeAt(0).getClientRects();
-    dump('Android.js has clientrects? ' + rects.length + '\n');
     let start = { x: this._isRTL ? rects[0].right : rects[0].left, y: rects[0].bottom };
     let end = { x: this._isRTL ? rects[rects.length - 1].left : rects[rects.length - 1].right, y: rects[rects.length - 1].bottom };
 
@@ -592,7 +609,6 @@ var SelectionHandler = {
     let checkHidden = function(x, y) {
       return false;
     };
-    dump('getHandlePositions im in frameElement? ' + this._contentWindow.frameElement);
     if (this._contentWindow.frameElement) {
       let bounds = this._contentWindow.frameElement.getBoundingClientRect();
       checkHidden = function(x, y) {
@@ -607,14 +623,6 @@ var SelectionHandler = {
       let cursor = this._domWinUtils.sendQueryContentEvent(this._domWinUtils.QUERY_CARET_RECT, this._targetElement.selectionEnd, 0, 0, 0);
       // the return value from sendQueryContentEvent is in LayoutDevice pixels and we want CSS pixels, so
       // divide by the pixel ratio
-      dump('cursorInfo ' + JSON.stringify({ 
-          left: cursor.left, 
-          top: cursor.top, 
-          height: cursor.height, 
-          dpr: this._contentWindow.devicePixelRatio,
-          scrollX: scroll.X,
-          scrollY: scroll.Y
-      }) + '\n');
       let x = cursor.left / this._contentWindow.devicePixelRatio;
       let y = (cursor.top + cursor.height) / this._contentWindow.devicePixelRatio;
       return [{ handle: this.HANDLE_TYPE_MIDDLE,

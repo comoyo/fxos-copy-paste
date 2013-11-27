@@ -24,3 +24,20 @@ Open index.html
 ## Changes I made in android.js
 
 * Replace all `window.devicePixelRatio` by `this._contentWindow.devicePixelRatio`.
+* Line 413: Replace document: `let range = this._contentWindow.document.createRange();`
+* Before sending the mouse events in _sendMouseEvent:
+
+```js
+    // sendMouseEventToWindow fakes a mouse event. The thing is that it only works if there is no chrome
+    var adjustX = this._contentWindow.mozInnerScreenX - this._contentWindow.screenX;
+    var adjustY = this._contentWindow.mozInnerScreenY - this._contentWindow.screenY;
+    if (adjustY === 22) { // b2g desktop @ osx
+      adjustY = 0;
+    }
+    
+    aX -= adjustX - 2; // todo: find out what works :p
+    aY -= adjustY - 2;
+
+    this._domWinUtils.sendMouseEvent("mousedown", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
+    this._domWinUtils.sendMouseEvent("mouseup", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
+```
