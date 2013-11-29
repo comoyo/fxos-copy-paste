@@ -4,14 +4,20 @@
 
 "use strict";
 
-var inXPCom = !(typeof Components === 'undefined' ||
+dump("###################################### SelectionHandler_glue.js loaded\n");
+
+let inXPCom = !(typeof Components === 'undefined' ||
   typeof Components.utils === 'undefined');
+
+let Ci = Components.interfaces;
+let Cc = Components.classes;
+let Cu = Components.utils;
   
 let uuidGenerator = Cc["@mozilla.org/uuid-generator;1"]
                       .getService(Components.interfaces.nsIUUIDGenerator);
 
 let UUID = uuidGenerator.generateUUID().toString();
-var TAP_ENABLED = true;
+let TAP_ENABLED = true;
 
 function debug() {
   // Prefer dump, but also needs to run in browser environment
@@ -29,10 +35,12 @@ function debug() {
   }
 }
 
-function XPComInit() {
-  var Ci = Components.interfaces;
-  var Cc = Components.classes;
-  var Cu = Components.utils;
+let POSITION_HANDLE_TIMING = 100;
+
+XPCOMUtils.defineLazyModuleGetter(this, "Rect",
+                                "resource://gre/modules/Geometry.jsm");
+
+function SelectionHandlerGlue() {
   
   Cu.import("resource://gre/modules/Services.jsm");
   Cu.import('resource://gre/modules/XPCOMUtils.jsm');
@@ -41,81 +49,104 @@ function XPComInit() {
     return content.QueryInterface(Ci.nsIInterfaceRequestor)
                   .getInterface(Ci.nsIDOMWindowUtils);
   });
-
-  XPCOMUtils.defineLazyModuleGetter(this, "Rect",
-                                  "resource://gre/modules/Geometry.jsm");
    
-  var els = Cc["@mozilla.org/eventlistenerservice;1"]
-              .getService(Ci.nsIEventListenerService);
+   // i dont see to have rights to access this here, lets skip
+  // var els = Cc["@mozilla.org/eventlistenerservice;1"]
+  //             .getService(Ci.nsIEventListenerService);
   
   var addEv = function(target, type, handler) {
+    target.addEventListener(type, handler, false);
     // Using the system group for mouse/touch events to avoid
     // missing events if .stopPropagation() has been called.
-    els.addSystemEventListener(target, 
-                              type,
-                              handler,
-                              /* useCapture = */ false);
+    // els.addSystemEventListener(target, 
+    //                           type,
+    //                           handler,
+    //                           /* useCapture = */ false);
   };
   
   var removeEv = function(target, type, handler) {
-    els.removeSystemEventListener(target, 
-                              type,
-                              handler,
-                              /* useCapture = */ false);
+    target.removeEventListener(type, handler, false);
+    // els.removeSystemEventListener(target, 
+    //                           type,
+    //                           handler,
+    //                           /* useCapture = */ false);
   };
   
-  content.document.addEventListener('DOMContentLoaded', function() {
-    selectionGlue(content.document.defaultView, content.document, addEv, removeEv);
-  });
+  this.init = function() {
+  	selectionGlue(content.document.defaultView, content.document, addEv, removeEv);
+  };
   
-  /**
-   * This code should be in b2g/chrome/content/shell.js
-   */
-  content.addEventListener('mozContentEvent', function(evt) {
-    var detail = evt.detail;
+  this.handleEvent = function(evt) {
+  	dump('SelectionHandler handleEvent ' + evt.type + '\n');
+  };
   
-    switch(detail.type) {
-      case 'selection':
-        if (detail.id !== UUID) return;
+  this.receiveMessage = function fa_receiveMessage(msg) {
+  	dump('SelectionHandler receiveMessage ' + msg.name + '\n');
+  };
+  this.observe = function(msg) {
+  	dump('SelectionHandler observe called\n');
+  };
+  
+  // call when we have a content window
+  this.attachContentWindow = function(contentWindow) {
+  	if (this._contentWindow) {
+  		return;
+  	}
+  	
+  	dump('Attach _contentWindow! ' + contentWindow.location + '\n');
+  	
+  	this._contentWindow = contentWindow;
+  	
+		var renderQueue = [];
+		function renderLoop() {
+			var last;
+			// Only process the last event, probably its accurate
+			if (renderQueue.length > 0) {
+				last = renderQueue.pop();
+				
+				dump('I have item in renderqueue ' + SelectionHandler._activeType + '\n');
+				if (SelectionHandler._activeType !== SelectionHandler.TYPE_NONE) {
+					TAP_ENABLED = false;
+					SelectionHandler.observe(null, last.name, JSON.stringify(last.data));
+					TAP_ENABLED = true;
+				}
+				
+				renderQueue = [];
+			}
 
-        // do it at next tick so the gesturedetector has stopped
-        // @todo, does gd.stopDetecting() works as well?
-        // content.setTimeout(function() {
-        debug('Disabling TAP_ENABLED');
-          TAP_ENABLED = false;
-          SelectionHandler.observe(null, detail.name, JSON.stringify(detail.data));
-          TAP_ENABLED = true;
-          debug('Enabling TAP_ENABLED');
-        // });
-        
-        switch (detail.name) {
-          case 'TextSelection:Move':
-            // this is timing issue. is this just desktop or also device?
-            content.setTimeout(function() {
-              SelectionHandler._positionHandles();
-            }, 30);
-            break;
-        }
-        break;
-    }
-  });
-  
-  content.addEventListener('mousedown', function(evt) {
-    var o = {};
-    for (var k in evt) {
-      o[k] = evt[k] + '';
-    }
-    
-    // debug('mousedown', content.location + '', o);
-  }, true, true);
-  
-  // content.addEventListener('mousedown', function(evt) {
-  //   debug('trusted mousedown', content.location + '', evt.clientX, evt.clientY);
-  // });
-  
-  // content.addEventListener('click', function(evt) {
-  //   debug('click', content.location + '', evt.clientX, evt.clientY);
-  // }, true, true);
+			contentWindow.requestAnimationFrame(function() {
+				// on next frame, make sure position is correct
+				if (last && last.name === 'TextSelection:Move') {
+					if (SelectionHandler._activeType !== SelectionHandler.TYPE_NONE) {
+						SelectionHandler._positionHandles();
+					}
+				}
+				// and LOOP!
+				renderLoop();
+			});
+		}
+		contentWindow.requestAnimationFrame(renderLoop);
+		
+		/**
+		* This code should be in b2g/chrome/content/shell.js
+		*/
+		contentWindow.addEventListener('mozContentEvent', function(evt) {
+			dump('SelectionHandlerGlue has content event "' + evt.detail.type + '"\n');
+			var detail = evt.detail;
+			dump('Detail info ' + detail.type + ' ' + detail.id + ' ' + JSON.stringify(detail.data) + '\n');
+
+			switch(detail.type) {
+				case 'selection':
+					dump('mozContentEvent has ID ' + detail.id + ' and module has ' + UUID + '\n');
+
+					if (detail.id !== UUID)
+						return;
+
+					renderQueue.push(detail);
+					break;
+			}
+		});
+  };
 }
 
 function BrowserInit() {
@@ -132,12 +163,6 @@ function BrowserInit() {
   });
 }
 
-if (inXPCom) {
-  XPComInit();
-}
-else {
-  BrowserInit();
-}
 var BrowserApp = {
   deck: {
     addEventListener: function(n) {
@@ -148,11 +173,18 @@ var BrowserApp = {
     }
   },
   selectedBrowser: {
-    contentWindow: content.document.defaultView
+    get contentWindow() {
+    	return glue._contentWindow;
+    }
   }
 };
 
 var sendMessageToJava = function(msg) {
+  // sendAsyncMessage("Forms:Selection", {
+  //   msg: JSON.stringify(msg),
+  //   id: UUID
+  // });
+	
   let browser = Services.wm.getMostRecentWindow("navigator:browser");
   browser.shell.sendChromeEvent({
     type: "selection",
@@ -161,256 +193,74 @@ var sendMessageToJava = function(msg) {
   });
 };
 
-function selectionGlue(win, doc, addEv, removeEv) {
-  // function Handle(handleType) {
-  //   var self = this;
-    
-  //   this._el = (function() {
-  //     var e = doc.createElement('div');
-  //     e.classList.add('handle');
-  //     e.style = 'position: absolute; background: green; width: 5px; height: 10px; z-index: 99999;';// + HANDLE_MARGIN + 'px;';
-  //     e.style.display = 'none';
-  //     doc.body.appendChild(e);
-      
-  //     return e;
-  //   })();
-    
-  //   this.hidden = true;
-    
-  //   this.show = function() {
-  //     self.hidden = false;
-  //     self._el.style.display = 'block';
-  //   };
-    
-  //   this.hide = function() {
-  //     self.hidden = true;
-  //     //self._el.style.display = 'none';
-  //   };
-    
-  //   this.setPosition = function(x, y) {
-  //     debug('setPosition', '"' + x + 'px"', y);
-  //     self._el.style.left = x + 'px';
-  //     self._el.style.top = y + 'px';
-  //   };
-    
-    /*
-        JSONObject args = new JSONObject();
-        try {
-            args.put("handleType", mHandleType.toString());
-            args.put("x", (int) geckoPoint.x);
-            args.put("y", (int) geckoPoint.y);
-        } catch (Exception e) {
-            Log.e(LOGTAG, "Error building JSON arguments for TextSelection:Move");
-        }
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("TextSelection:Move", args.toString()));
-    */
+function selectionGlue() {
+	// @todo: use Gesture:SingleTap (but doesnt work for now)
 
-  //   addEv(win, 'touchstart', function ots(e) {
-  //     if (!TAP_ENABLED) return;
-  //     if (e.touches.length > 1) return;
-  //     if (e.touches[0].target !== self._el) return;
-  //     if (e.touches[0].target.ownerDocument !== doc) return;
-      
-  //     var startY = e.touches[0].clientY;
-      
-  //     // we know that Y is 36 too high on B2G desktop...
-  //     startY -= 36;
-      
-  //     e.stopPropagation();
-  //     e.preventDefault();
-      
-  //     debug('touchstart of', handleType, 'started');
-      
-  //     var otm, ote;
-      
-  //     addEv(win, 'touchmove', otm = function(e) {
-  //       if (!TAP_ENABLED) return;
-  //       if (e.changedTouches[0].target !== self._el) return;
-        
-  //       e.stopPropagation();
-  //       e.preventDefault();
-        
-  //       debug('touchmove happened', e.changedTouches[0].clientX, e.changedTouches[0].clientY - HANDLE_MARGIN);
-        
-  //       // // Disable tap because this creates tap events itself
-  //       // TAP_ENABLED = false;
-        
-  //       // // This should be in move but TextSelection:Move synths a fake mouse event
-  //       // // that then gets translated in fake touchevent blablabla
-  //       // broadcast('TextSelection:Move', {
-  //       //   handleType: handleType,
-  //       //   x: e.changedTouches[0].clientX,
-  //       //   y: e.changedTouches[0].clientY - HANDLE_MARGIN
-  //       // });
-        
-  //       // TAP_ENABLED = true;
-        
-  //       return false;
-  //     });
-      
-  //     addEv(win, 'touchend', ote = function(e) {
-  //       if (!TAP_ENABLED) return;
-  //       if (e.changedTouches[0].target !== self._el) return;
-        
-  //       e.stopPropagation();
-  //       e.preventDefault();
-        
-  //       debug('touchend happened', {
-  //         x: e.changedTouches[0].clientX,
-  //         y: startY
-  //       });
-  //       removeEv(win, 'touchmove', otm);
-  //       removeEv(win, 'touchend', ote);
-        
-  //       // Disable tap because this creates tap events itself
-  //       TAP_ENABLED = false;
-        
-  //       // This should be in move but TextSelection:Move synths a fake mouse event
-  //       // that then gets translated in fake touchevent blablabla
-  //       broadcast('TextSelection:Move', {
-  //         handleType: handleType,
-  //         x: e.changedTouches[0].clientX,
-  //         y: startY
-  //       });
-        
-  //       self.updatePosition();
-        
-  //       TAP_ENABLED = true;
-        
-  //       return false;
-  //     });
-      
-  //     return false;
-  //   });
-    
-  //   /**
-  //   * Android and FFOS work a bit different, so the position is not right yet
-  //   * have to timeout and request again
-  //   */
-  //   this.updatePosition = function() {
-  //     win.setTimeout(function() {
-  //       if (self.hidden) return;
-
-  //       TAP_ENABLED = false;
-        
-  //       broadcast('TextSelection:Position', { handleType: handleType });
-        
-  //       TAP_ENABLED = true;
-  //     }, 50);
-  //   };
-  // }
-  
-  // var handles = {
-  //   'START': new Handle('START'),
-  //   'MIDDLE': new Handle('MIDDLE'),
-  //   'END': new Handle('END')
-  // };
-  
   // === Glue between browser & SelectionHandler (in Android this lives in mobile/android/chrome/browser.js ===
   eventbus.on('tap', function(e) {
     var element = e.target;
+    // on real device for some reason the div inside the textbox is the target
+    if (element.classList.contains('anonymous-div')) {
+    	element = element.parentNode; // <div class=\"anonymous-div\"><br></div>'))
+    }
+
     if (!element.disabled &&
-        ((element instanceof win.HTMLInputElement && element.mozIsTextField(false)) ||
-        (element instanceof win.HTMLTextAreaElement))) {
-      debug('Ill be attaching my caret');
-      win.setTimeout(function() {
-        SelectionHandler.attachCaret(element);
-      }, 30); // make sure the browser sets selection first
+        ((element instanceof Ci.nsIDOMHTMLInputElement && element.mozIsTextField(false)) ||
+        (element instanceof Ci.nsIDOMHTMLTextAreaElement))) {
       
-      // ['MIDDLE'].forEach(function(k) {
-      //   handles[k].updatePosition();
-      // });
+      glue.attachContentWindow(element.ownerDocument.defaultView);
+      
+      element.ownerDocument.defaultView.setTimeout(function() {
+        SelectionHandler.attachCaret(element);
+      }, POSITION_HANDLE_TIMING); // make sure the browser sets selection first
     }
   });
-  
-  // eventbus.on('TextSelection:ShowHandles', function(e) {
-  //   debug('Showing', e.handles);
-  //   if (!e.handles) e.handles = ['START', 'MIDDLE', 'END'];
-    
-  //   e.handles.map(function(n) {
-  //     return handles[n];
-  //   }).forEach(function(handle) {
-  //     handle.show();
-  //   });
-  // });
-  
-  // eventbus.on('TextSelection:HideHandles', function(e) {
-  //   debug('Hiding', e.handles);
-  //   if (!e.handles) e.handles = ['START', 'MIDDLE', 'END']; // hide all
-    
-  //   e.handles.map(function(n) {
-  //     return handles[n];
-  //   }).forEach(function(handle) {
-  //     handle.hide();
-  //   });
-  // });
-  
-  /*
-      "type": "TextSelection:PositionHandles",    "positions": [
-        {
-            "handle": "MIDDLE",
-            "left": 51,            "top": 134,
-            "hidden": false
-        }
-    ],
-    "rtl": false
-    */
-  // eventbus.on('TextSelection:PositionHandles', function(e) {
-  //   if (e.rtl) {
-  //     debug('!!! Need to implement RTL!');
-  //   }
-  //   e.positions.forEach(function(pos) {
-  //     var handle = handles[pos.handle];
-  //     handle.setPosition(pos.left, pos.top);
-  //     pos.hidden ? handle.hide() : handle.show();
-  //   });
-  // });
   
   // === Other glueeee
 
   // Longtap handler
-  (function longtapHandler() {
-    var eventName = 'longtap';
-    var timeout = 400;
-    var touchTimeout; // when did touch start start?
-    var startX, startY, target;
+  // (function longtapHandler() {
+  //   var eventName = 'longtap';
+  //   var timeout = 400;
+  //   var touchTimeout; // when did touch start start?
+  //   var startX, startY, target;
     
-    // shit thats important: longtap
-    addEv(doc.body, 'touchstart', function(e) {
-      if (e.touches.length > 1) return;
-      if (e.touches[0].target.ownerDocument !== doc) return;
+  //   // shit thats important: longtap
+  //   addEv(doc.body, 'touchstart', function(e) {
+  //     if (e.touches.length > 1) return;
+  //     if (e.touches[0].target.ownerDocument !== doc) return;
       
-      target = e.touches[0].target;
+  //     target = e.touches[0].target;
       
-      // is target contenteditable or an input field we continue
-      // if (!(target.isContentEditable ||
-      //     target.designMode == "on" ||
-      //     target instanceof HTMLInputElement ||
-      //     target instanceof HTMLTextAreaElement)) {
-      //   return;
-      // }
+  //     // is target contenteditable or an input field we continue
+  //     // if (!(target.isContentEditable ||
+  //     //     target.designMode == "on" ||
+  //     //     target instanceof HTMLInputElement ||
+  //     //     target instanceof HTMLTextAreaElement)) {
+  //     //   return;
+  //     // }
       
-      touchTimeout = win.setTimeout(function() {
-        eventbus.emit(eventName, { target: target, clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
-      }, timeout);
-      startX = e.touches[0].pageX;
-      startY = e.touches[0].pageY;
-    });
+  //     touchTimeout = win.setTimeout(function() {
+  //       eventbus.emit(eventName, { target: target, clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
+  //     }, timeout);
+  //     startX = e.touches[0].pageX;
+  //     startY = e.touches[0].pageY;
+  //   });
     
-    addEv(doc.body, 'touchmove', function(e) {
-      if (!touchTimeout) return;
+  //   addEv(doc.body, 'touchmove', function(e) {
+  //     if (!touchTimeout) return;
       
-      if (Math.abs(e.touches[0].pageX - startX) > 10 ||
-          Math.abs(e.touches[0].pageY - startY) > 10 ||
-          e.touches[0].target !== target) {
-        win.clearTimeout(touchTimeout);
-      }
-    });
+  //     if (Math.abs(e.touches[0].pageX - startX) > 10 ||
+  //         Math.abs(e.touches[0].pageY - startY) > 10 ||
+  //         e.touches[0].target !== target) {
+  //       win.clearTimeout(touchTimeout);
+  //     }
+  //   });
     
-    addEv(doc.body, 'touchend', function() {
-      win.clearTimeout(touchTimeout);
-    });
-  })();
+  //   addEv(doc.body, 'touchend', function() {
+  //     win.clearTimeout(touchTimeout);
+  //   });
+  // })();
   
   // Normal tap handler
   (function tapHandler() {
@@ -418,18 +268,19 @@ function selectionGlue(win, doc, addEv, removeEv) {
     var startX, startY;
     var now;
 
-    addEv(doc.body, 'touchstart', function(e) {
+    addEventListener("touchstart", function(e) {
       if (!TAP_ENABLED) return;
       if (e.touches.length > 1) return;
-      if (e.touches[0].target.ownerDocument !== doc) return;
+      if (e.touches[0].target.ownerDocument !== content.document) return;
+      dump('document info '  + (content.document && content.document.location) + '\n');
       
       target = e.touches[0].target;
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
       now = +new Date;
-    });
+    }, true, false);
     
-    addEv(doc.body, 'touchend', function(e) {
+    addEventListener("touchend", function(e) {
       if (!TAP_ENABLED) return;
       if (e.changedTouches.length > 1) return;
       if (e.changedTouches[0].target !== target) return;
@@ -441,17 +292,17 @@ function selectionGlue(win, doc, addEv, removeEv) {
       eventbus.emit('tap', { target: target, clientX: startX, clientY: startY });
       
       now = 0;
-    });
+    }, true, false);
   })();
   
 }
 
 /*!
- * EventEmitter v4.2.5 - git.io/ee
- * Oliver Caldwell
- * MIT license
- * @preserve
- */
+* EventEmitter v4.2.5 - git.io/ee
+* Oliver Caldwell
+* MIT license
+* @preserve
+*/
 var EventEmitter = (function () {
 	'use strict';
 
@@ -907,5 +758,7 @@ var EventEmitter = (function () {
 	return EventEmitter;
 })();
 
-var eventbus = new EventEmitter();
-  
+let eventbus = new EventEmitter();
+
+let glue = new SelectionHandlerGlue();
+glue.init();

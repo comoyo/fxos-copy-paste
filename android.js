@@ -3,6 +3,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
+dump('==== SelectionHandler loaded ====\n');
+
 var SelectionHandler = {
   HANDLE_TYPE_START: "START",
   HANDLE_TYPE_MIDDLE: "MIDDLE",
@@ -26,6 +28,7 @@ var SelectionHandler = {
   },
 
   set _contentWindow(aContentWindow) {
+    dump('SelectionHandler set contentWindow\n');
     this._contentWindowRef = Cu.getWeakReference(aContentWindow);
   },
 
@@ -409,6 +412,18 @@ var SelectionHandler = {
   },
 
   _sendMouseEvents: function sh_sendMouseEvents(aX, aY, useShift) {
+    var adjustX = this._contentWindow.mozInnerScreenX - this._contentWindow.screenX;
+    var adjustY = this._contentWindow.mozInnerScreenY - this._contentWindow.screenY;
+    dump('SelectionHandler:_sendMouseEvents ' + JSON.stringify({
+      aX: aX,
+      aY: aY,
+      adjustX: adjustX,
+      adjustY: adjustY
+    }) + '\n');
+    if (adjustY === 22) { // b2g desktop @ osx
+      adjustY = 0;
+    }
+
     // If we're positioning a cursor in an input field, make sure the handle
     // stays within the bounds of the field
     if (this._activeType == this.TYPE_CURSOR) {
@@ -425,9 +440,11 @@ var SelectionHandler = {
                                 editorBounds.top / this._contentWindow.devicePixelRatio,
                                 editorBounds.width / this._contentWindow.devicePixelRatio,
                                 editorBounds.height / this._contentWindow.devicePixelRatio);
-
+      
       // Use intersection of the text rect and the editor rect
-      let rect = new Rect(textBounds.left, textBounds.top, textBounds.width, textBounds.height);
+      //    textBounds is in x,y from window object while editorBounds is x,y from screen
+      //    so we need to normalize this
+      let rect = new Rect(textBounds.left + adjustX, textBounds.top + adjustY, textBounds.width, textBounds.height);
       rect.restrictTo(editorRect);
 
       // Clamp vertically and scroll if handle is at bounds. The top and bottom
@@ -447,7 +464,7 @@ var SelectionHandler = {
         aX = rect.x;
         this._getSelectionController().scrollCharacter(false);
       } else if (aX > rect.x + rect.width) {
-        aX = rect.x + rect.width;
+        aX = rect.x + rect.width - 1;
         this._getSelectionController().scrollCharacter(true);
       }
     } else if (this._activeType == this.TYPE_SELECTION) {
@@ -455,22 +472,15 @@ var SelectionHandler = {
       aY -= 1;
     }
     
+    dump('mouseEvents gonna go to ' + JSON.stringify({
+      aX: aX,
+      aY: aY
+    }) + '\n');
+    
     // sendMouseEventToWindow fakes a mouse event. The thing is that it only works if there is no chrome
-    var adjustX = this._contentWindow.mozInnerScreenX - this._contentWindow.screenX;
-    var adjustY = this._contentWindow.mozInnerScreenY - this._contentWindow.screenY;
-    dump('sending fake mouseevent adjust ' + adjustX + ' ' + adjustY + '\n');
-    if (adjustY === 22) { // b2g desktop @ osx
-      adjustY = 0;
-    }
+    aX -= adjustX; // todo: find out what works :p
+    aY -= adjustY;
     
-    dump('before adjustment ' + aX + ' ' + aY + '\n');
-    
-    aX -= adjustX - 2; // todo: find out what works :p
-    aY -= adjustY - 2;
-    
-    
-    dump('fake event to ' + aX + ' ' + aY + '\n');
-
     this._domWinUtils.sendMouseEvent("mousedown", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
     this._domWinUtils.sendMouseEvent("mouseup", aX, aY, 0, 1, useShift ? Ci.nsIDOMNSEvent.SHIFT_MASK : 0, true);
   },
