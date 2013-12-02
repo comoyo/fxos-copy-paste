@@ -2,6 +2,8 @@
  * Codez that will run in the system app on FxOS
  */
 (function() {
+  return;
+
   function debug() {
     dump('System SelectionHandler: ' +
       [].slice.call(arguments).map(function(a) {

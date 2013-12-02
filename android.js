@@ -28,7 +28,6 @@ var SelectionHandler = {
   },
 
   set _contentWindow(aContentWindow) {
-    dump('SelectionHandler set contentWindow\n');
     this._contentWindowRef = Cu.getWeakReference(aContentWindow);
   },
 
@@ -179,6 +178,7 @@ var SelectionHandler = {
 
   _getScrollPos: function sh_getScrollPos() {
     if (!this._contentWindow) {
+      // This is important because if we reach this codez we clicked in the wrong place
       return dump('\n\n\n\n_getScrollPos called without contentWindow ' + JSON.stringify(Object.keys(this)) + '\n');
     }
     // Get the current display position
@@ -295,7 +295,6 @@ var SelectionHandler = {
     this._contentWindow.addEventListener("blur", this, true);
 
     this._activeType = this.TYPE_CURSOR;
-    dump('Setting _activeType to TYPE_CURSOR ' + this._activeType + ' ' + this + ' ' + (this === SelectionHandler) + '\n');
     this._positionHandles();
 
     sendMessageToJava({
@@ -414,15 +413,9 @@ var SelectionHandler = {
   _sendMouseEvents: function sh_sendMouseEvents(aX, aY, useShift) {
     var adjustX = this._contentWindow.mozInnerScreenX - this._contentWindow.screenX;
     var adjustY = this._contentWindow.mozInnerScreenY - this._contentWindow.screenY;
-    dump('SelectionHandler:_sendMouseEvents ' + JSON.stringify({
-      aX: aX,
-      aY: aY,
-      adjustX: adjustX,
-      adjustY: adjustY
-    }) + '\n');
-    if (adjustY === 22) { // b2g desktop @ osx
-      adjustY = 0;
-    }
+    // if (adjustY === 22) { // b2g desktop @ osx
+    //   adjustY = 0;
+    // }
 
     // If we're positioning a cursor in an input field, make sure the handle
     // stays within the bounds of the field
@@ -464,18 +457,24 @@ var SelectionHandler = {
         aX = rect.x;
         this._getSelectionController().scrollCharacter(false);
       } else if (aX > rect.x + rect.width) {
-        aX = rect.x + rect.width - 1;
+        aX = rect.x + rect.width - 2;
         this._getSelectionController().scrollCharacter(true);
       }
+
+      dump('mouseEvents gonna go to ' + JSON.stringify({
+        aX: aX,
+        aY: aY,
+        rect: {
+          width: rect.width,
+          height: rect.height,
+          x: rect.x,
+          y: rect.y
+        }
+      }) + '\n');
     } else if (this._activeType == this.TYPE_SELECTION) {
       // Send mouse event 1px too high to prevent selection from entering the line below where it should be
       aY -= 1;
     }
-    
-    dump('mouseEvents gonna go to ' + JSON.stringify({
-      aX: aX,
-      aY: aY
-    }) + '\n');
     
     // sendMouseEventToWindow fakes a mouse event. The thing is that it only works if there is no chrome
     aX -= adjustX; // todo: find out what works :p
@@ -547,7 +546,6 @@ var SelectionHandler = {
   },
 
   _deactivate: function sh_deactivate() {
-    dump('Deactivate called\n');
     this._activeType = this.TYPE_NONE;
 
     sendMessageToJava({ type: "TextSelection:HideHandles" });
