@@ -69,6 +69,7 @@ var SelectionHandler = {
   },
 
   observe: function sh_observe(aSubject, aTopic, aData) {
+    dump('Observe ' + aTopic + ': ' + JSON.stringify(aData) + '\n');
     switch (aTopic) {
       case "Gesture:SingleTap": {
         if (this._activeType == this.TYPE_SELECTION) {
@@ -136,7 +137,9 @@ var SelectionHandler = {
           // Act on selectionChange notifications after handle movement ends
           this._ignoreSelectionChanges = false;
         }
-        this._positionHandles();
+        if (this._activeType !== this.TYPE_NONE) {
+          this._positionHandles();
+        }
         break;
       }
 
@@ -267,7 +270,11 @@ var SelectionHandler = {
       distance = dx + dy;
     }
 
-    let maxSelectionDistance = Services.prefs.getIntPref("browser.ui.selection.distance");
+    let maxSelectionDistance = 250;
+    try {
+      maxSelectionDistance = Services.prefs.getIntPref("browser.ui.selection.distance");
+    }
+    catch (ex) {}
     // Do not select text far away from where the user clicked
     if (distance > maxSelectionDistance) {
       this._closeSelection();
@@ -370,6 +377,13 @@ var SelectionHandler = {
     // in editable targets. We should factor out the logic that's currently in _sendMouseEvents.
     let viewOffset = this._getViewOffset();
     let caretPos = this._contentWindow.document.caretPositionFromPoint(aX - viewOffset.x, aY - viewOffset.y);
+    dump('caretPos ' + JSON.stringify({
+      isBegin: aIsStartHandle,
+      node: caretPos.offsetNode && caretPos.offsetNode.outerHTML && caretPos.offsetNode.outerHTML.substr(0, 100),
+      offset: caretPos.offset,
+      aX: aX,
+      aY: aY
+    }) + '\n');
 
     // Constrain text selection within editable elements.
     let targetIsEditable = this._targetElement instanceof Ci.nsIDOMNSEditableElement;
@@ -593,6 +607,10 @@ var SelectionHandler = {
     let selection = this._getSelection();
     let range = selection.getRangeAt(0);
     let rects = selection.getRangeAt(0).getClientRects();
+    if (!rects.length) {
+      dump('_updateCacheForSelection called but there is no selection!!\n');
+      return;
+    }
     let start = { x: this._isRTL ? rects[0].right : rects[0].left, y: rects[0].bottom };
     let end = { x: this._isRTL ? rects[rects.length - 1].left : rects[rects.length - 1].right, y: rects[rects.length - 1].bottom };
 

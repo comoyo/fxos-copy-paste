@@ -39,6 +39,9 @@ let POSITION_HANDLE_TIMING = 100;
 XPCOMUtils.defineLazyModuleGetter(this, "Rect",
                                 "resource://gre/modules/Geometry.jsm");
 
+let ADJUST_X = 0;
+let ADJUST_Y = 0;
+
 function SelectionHandlerGlue() {
 	var self = this;
 	
@@ -96,20 +99,25 @@ function SelectionHandlerGlue() {
 			var last;
 			// Only process the last event, probably its accurate
 			if (renderQueue.length > 0) {
-				last = renderQueue.pop();
-				
-				if (SelectionHandler._activeType !== SelectionHandler.TYPE_NONE) {
-					TAP_ENABLED = false;
-					SelectionHandler.observe(null, last.name, JSON.stringify(last.data));
-					TAP_ENABLED = true;
-				}
+			  // which events do we need to render?
+				var res = {};
+        renderQueue.forEach(function(t) {
+           res[t.name] = t;
+        });
+        
+        TAP_ENABLED = false;
+        Object.keys(res).forEach(function(k) {
+          last = res[k];
+          SelectionHandler.observe(null, last.name, JSON.stringify(last.data));
+        });
+        TAP_ENABLED = true;
 				
 				renderQueue = [];
 			}
 
 			contentWindow.requestAnimationFrame(function() {
-				// on next frame, make sure position is correct
-				if (last && last.name === 'TextSelection:Move') {
+				// on next frame, make sure position is correct (only for middle)
+				if (last && last.name === 'TextSelection:Move' && last.data.handleType === 'MIDDLE') {
 					if (SelectionHandler._activeType !== SelectionHandler.TYPE_NONE) {
 						SelectionHandler._positionHandles();
 					}
@@ -126,6 +134,22 @@ function SelectionHandlerGlue() {
 		
 		// I dont know how to do this properly
 		injectCss(contentWindow.document);
+		
+    // In FF for Android everything is positioned on the screen based on screenX,
+    // screenY coordinates. But here we need to have the relative position cause
+    // we position in process
+    function onResize() {
+      // So get the innerScreenX to get the correct position
+      ADJUST_X = contentWindow.mozInnerScreenX - contentWindow.screenX;
+      ADJUST_Y = contentWindow.mozInnerScreenY - contentWindow.screenY;
+    }
+    onResize();
+    contentWindow.addEventListener('resize', onResize);
+  
+    // if (ADJUST_Y === 22) { // B2G desktop on OSX gives QUERY_CARET_RECT back
+    // // without window chrome
+    //   ADJUST_Y = 0;
+    // }
   };
   
   /**
@@ -133,8 +157,6 @@ function SelectionHandlerGlue() {
    * this in system first
    */
   this.receiveContentEvent = function(name, data) {
-		dump('receiveContentEvent ' + JSON.stringify({ name: name, data: data }) + '\n');
-
 		renderQueue.push({ name: name, data: data });
   };
 }
@@ -157,6 +179,14 @@ var BrowserApp = {
   selectedBrowser: {
     get contentWindow() {
     	return glue._contentWindow;
+    }
+  }
+};
+
+var NativeWindow = {
+  toast: {
+    show: function(a, b) {
+      dump('NativeWindow.toast.show ' + JSON.stringify([a,b]) + '\n');
     }
   }
 };
@@ -197,6 +227,27 @@ function selectionGlue() {
       element.ownerDocument.defaultView.setTimeout(function() {
         SelectionHandler.attachCaret(element);
       }, POSITION_HANDLE_TIMING); // make sure the browser sets selection first
+    }
+
+    // Broadcast the SingleTap event
+    // @todo, do we need to call adjust on this?
+    SelectionHandler.observe(null, 'Gesture:SingleTap', JSON.stringify({
+      x: e.clientX,
+      y: e.clientY
+    }));
+  });
+  
+  addEventListener("contextmenu", function(e) {
+    if (e.target.ownerDocument !== content.document) return;
+
+    // @todo find out if there are other listeners to this event or something
+    glue.attachContentWindow(e.target.ownerDocument.defaultView);
+    
+    dump('Longpress happened ' + e.clientX + ' ' + e.clientY + '\n');
+    if (SelectionHandler.canSelect(e.target)) {
+      if (!SelectionHandler.startSelection(e.target, e.clientX, e.clientY)) {
+        // SelectionHandler.attachCaret(e.target);
+      }
     }
   });
   
@@ -247,16 +298,25 @@ function injectCss(doc) {
   position: absolute;\n\
   z-index: 1000000;\n\
   -moz-user-focus: ignore;\n\
+  border-bottom: 50px solid green; /* bottom, add background color here */\n\
 }\n\
 \n\
 .caret[data-hidden] {\n\
   display: none;\n\
 }\n\
-\n\
 .caret.middle {\n\
 	border-left: 25px solid transparent;  /* left arrow slant */\n\
 	border-right: 25px solid transparent; /* right arrow slant */\n\
-	border-bottom: 50px solid green; /* bottom, add background color here */\n\
+	margin-left: -25px; /* in the middle */\n\
+}\n\
+.caret.end {\n\
+	border-left: 0 solid transparent;  /* left arrow slant */\n\
+	border-right: 25px solid transparent; /* right arrow slant */\n\
+	margin-left: 0; /* in the middle */\n\
+}\n\
+.caret.start {\n\
+	border-left: 25px solid transparent;  /* left arrow slant */\n\
+	border-right: 0 solid transparent; /* right arrow slant */\n\
 	margin-left: -25px; /* in the middle */\n\
 }';
 	
@@ -272,24 +332,6 @@ function createCaretHandler(win, doc, sendContentEvent) {
         return JSON.stringify(a, null, 4);
       }).join(' ') + '\n');
   }
-
-  // In FF for Android everything is positioned on the screen based on screenX,
-  // screenY coordinates. But here we need to have the relative position cause
-  // we position in process
-  var ADJUST_X, ADJUST_Y;
-
-  function onResize() {
-    // So get the innerScreenX to get the correct position
-    ADJUST_X = win.mozInnerScreenX - win.screenX;
-    ADJUST_Y = win.mozInnerScreenY - win.screenY;
-  }
-  onResize();
-  win.addEventListener('resize', onResize);
-
-  // if (ADJUST_Y === 22) { // B2G desktop on OSX gives QUERY_CARET_RECT back
-  // // without window chrome
-  //   ADJUST_Y = 0;
-  // }
   var LAST_ID;
 
   /**
@@ -300,6 +342,7 @@ function createCaretHandler(win, doc, sendContentEvent) {
     var self = this;
 
     this._el = null;
+    this._startOffset = null;
 
     /**
      * Create caret element (should not be done in content window, but yeah)
@@ -314,12 +357,25 @@ function createCaretHandler(win, doc, sendContentEvent) {
       e.addEventListener('touchstart', function(ev) {
         if (ev.touches.length !== 1) return;
         ev.stopPropagation();
+        ev.preventDefault();
+
+        self._startOffset = {
+          x: 0, // ev.touches[0].pageX - ev.touches[0].target.offsetLeft,
+          y: (ev.touches[0].pageY - ev.touches[0].target.offsetTop)
+        };
+        dump('Started touchstart offset is ' + JSON.stringify(self._startOffset) + '\n');
       });
 
       e.addEventListener('touchmove', function(ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+
         self.onPan(ev);
       });
       e.addEventListener('touchend', function(ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        
         self.onSwipe(ev);
       });
       self.hide();
@@ -338,45 +394,94 @@ function createCaretHandler(win, doc, sendContentEvent) {
     };
 
     this.setPosition = function(x, y) {
-      x -= ADJUST_X;
-      y -= ADJUST_Y;
+      // this is not so nice :p
+      if (handleType === 'MIDDLE') {
+        x -= ADJUST_X;
+        y -= ADJUST_Y;
+      }
 
       // debug('setPosition', handleType, x, y);
       self._el.style.left = x + 'px';
       self._el.style.top = y + 'px';
     };
+    
+    this.calculateXY = function(e) {
+      var x = e.changedTouches[0].clientX;
+      var y = e.changedTouches[0].clientY;
+
+      // Adjust the cursor for the startOffset
+      x -= self._startOffset.x;
+      y -= self._startOffset.y;
+      
+      if (handleType === 'MIDDLE') {
+        x += ADJUST_X;
+        y += ADJUST_Y;
+      }
+
+      // The position in the document if we would have to position ourselves
+      // based on the touch event
+      // Can use this to already position the caret in more or less the
+      // right position...
+      var positionX = x + content.scrollX;
+      var positionY = y + content.scrollY;
+
+      if (handleType === 'END') {
+        x -= 1; // adjust 1 px because otherwise we're hovering over ourselves
+      }
+      
+      return [x, y, positionX, positionY];
+    };
 
     this.onPan = function(e) {
       if (!e.changedTouches.length) return;
-
+      
+      let [x, y, posX, posY] = self.calculateXY(e);
+      
       // When we go back to SelectionHandler make sure to communicate the
       // screen coordinates
       sendContentEvent('TextSelection:Move', {
         handleType: handleType,
-        x: e.changedTouches[0].clientX + ADJUST_X,
-        y: e.changedTouches[0].clientY + ADJUST_Y
+        x: x,
+        y: y
       });
+
+      // If we're handleType MIDDLE then let the SelectionHandler
+      // decide where we're repositioning to
+      if (handleType !== 'MIDDLE') {
+        self.setPosition(posX, posY);
+      }
     };
 
     this.onSwipe = function(e) {
       if (!e.changedTouches.length) return;
-      
+
+      let [x, y] = self.calculateXY(e);
+
       sendContentEvent('TextSelection:Move', {
         handleType: handleType,
-        x: e.changedTouches[0].clientX + ADJUST_X,
-        y: e.changedTouches[0].clientY + ADJUST_Y
+        x: x,
+        y: y
       });
+      
+      sendContentEvent('TextSelection:Position', {
+        handleType: handleType
+      });
+      
+      self._startOffset = null;
     };
 
     this.init();
   }
 
   var handles = {
-    'MIDDLE': new Handle('MIDDLE')
+    'START': new Handle('START'),
+    'MIDDLE': new Handle('MIDDLE'),
+    'END': new Handle('END')
   };
   
   // Communication layer from Android -> UI
   var onMessageFromJava = function(msg) {
+    dump('onMessageFromJava ' + JSON.stringify(msg) + '\n');
     switch (msg.type) {
       case 'TextSelection:ShowHandles':
         if (!msg.handles) {
