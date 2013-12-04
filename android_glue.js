@@ -84,11 +84,9 @@ function SelectionHandlerGlue() {
   // We should only go and do stuff when a real tap happened and we are going
   // to show the carets
   this.attachContentWindow = function(contentWindow) {
-		if (this._contentWindow) {
-			return;
-		}
-		
-		dump('Attach _contentWindow! ' + contentWindow.location + '\n');
+    // @todo find better way to detect if we're already present in this page
+		if (contentWindow.document.querySelectorAll('.caret').length > 0)
+		  return;
 		
 		this._contentWindow = contentWindow;
 		
@@ -195,6 +193,7 @@ var NativeWindow = {
  * SelectionHandler calls this if it wants to update the UI state
  */
 function sendMessageToJava(msg) {
+  dump('sendMessageToJava ' + JSON.stringify(msg) + '\n');
   glue.caretHandler.onMessageFromJava(msg);
 	
   // let browser = Services.wm.getMostRecentWindow("navigator:browser");
@@ -208,8 +207,25 @@ function sendMessageToJava(msg) {
 function selectionGlue() {
 	// @todo: use Gesture:SingleTap (but doesnt work for now)
   // === Glue between browser & SelectionHandler (in Android this lives in mobile/android/chrome/browser.js ===
-  createTapHandler(function(e) {
+  function onTouchEvent(e) {
+    switch (e.type) {
+      case 'tap':
+        onTap(e);
+        break;
+      case 'dbltap':
+        onDblTap(e);
+        break;
+    }
+  }
+  
+  function onTap(e) {
     var element = e.target;
+    
+    if (element.ownerDocument !== content.document) return;
+    if (element.ownerDocument.hidden) return;
+    
+    dump('onTap happened\n');
+
     // on real device for some reason the div inside the textbox is the target
     if (element.classList.contains('anonymous-div')) {
     	element = element.parentNode; // <div class=\"anonymous-div\"><br></div>'))
@@ -230,59 +246,135 @@ function selectionGlue() {
     }
 
     // Broadcast the SingleTap event
-    // @todo, do we need to call adjust on this?
-    SelectionHandler.observe(null, 'Gesture:SingleTap', JSON.stringify({
-      x: e.clientX,
-      y: e.clientY
-    }));
-  });
+    // The thing is that we don't really comply with Android so we have our
+    // custom handler here... That doesn't copy on click f.e.
+    if (SelectionHandler._activeType == SelectionHandler.TYPE_SELECTION) {
+      if (!this._pointInSelection(e.clientX, e.clientY)) {
+        this._closeSelection();
+      }
+    } else if (SelectionHandler._activeType == SelectionHandler.TYPE_CURSOR) {
+      // attachCaret() is called in the "Gesture:SingleTap" handler in BrowserEventHandler
+      // We're guaranteed to call this first, because this observer was added last
+      SelectionHandler._deactivate();
+    }
+  }
   
-  addEventListener("contextmenu", function(e) {
+  // addEventListener('click', function(e) {
+
+  // }, true, false);
+  
+
+  // createDoubleTapHandler(function(e) {
+  function onDblTap(e) {
     if (e.target.ownerDocument !== content.document) return;
+    if (e.target.ownerDocument.hidden) return;
+
+    e.originalEvent.stopPropagation();
+    e.originalEvent.preventDefault();
+    
+    dump('onDblTap happened\n');
 
     // @todo find out if there are other listeners to this event or something
     glue.attachContentWindow(e.target.ownerDocument.defaultView);
     
-    dump('Longpress happened ' + e.clientX + ' ' + e.clientY + '\n');
     if (SelectionHandler.canSelect(e.target)) {
-      if (!SelectionHandler.startSelection(e.target, e.clientX, e.clientY)) {
-        // SelectionHandler.attachCaret(e.target);
-      }
+      SelectionHandler.startSelection(e.target, e.clientX, e.clientY);
     }
-  });
-  
-  // Normal tap handler
-  function createTapHandler(onTap) {
-    var target;
-    var startX, startY;
-    var now;
-
-    addEventListener("touchstart", function(e) {
-      if (!TAP_ENABLED) return;
-      if (e.touches.length > 1) return;
-      // Need to check the ownerDocument because the event can propagate thru
-      if (e.touches[0].target.ownerDocument !== content.document) return;
-      
-      target = e.touches[0].target;
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-      now = +new Date;
-    }, true, false);
-    
-    addEventListener("touchend", function(e) {
-      if (!TAP_ENABLED) return;
-      if (e.changedTouches.length > 1) return;
-      if (e.changedTouches[0].target !== target) return;
-      
-      // 100 ms to tap
-      if ((+new Date) > (now + 250))
-        return;
-      
-      onTap({ target: target, clientX: startX, clientY: startY });
-      
-      now = 0;
-    }, true, false);
   }
+  
+  // This part has been based of https://github.com/GianlucaGuarini/Tocca.js
+  // It's MIT licensed. Should be replaced by Gesture:* events from TabChild.cpp
+  // I'm not very confident of the stability of the code though...
+  (function(onTouchEvent) {
+    'use strict';
+    // helpers
+    var setListener = function(events, callback) {
+        var eventsArray = events.split(' '),
+          i = eventsArray.length;
+        while (i--) {
+          addEventListener(eventsArray[i], callback, true, false);
+        }
+      },
+      getPointerEvent = function(event) {
+        return event.targetTouches ? event.targetTouches[0] : event;
+      },
+      sendEvent = function(elm, eventName, originalEvent) {
+        var data = {};
+        data.clientX = currX;
+        data.clientY = currY;
+        data.distance = data.distance;
+        data.target = elm;
+        data.type = eventName;
+        data.originalEvent = originalEvent;
+
+        onTouchEvent(data);
+      };
+  
+    var touchStarted = false, // detect if a touch event is sarted
+      swipeTreshold = 80,
+      taptreshold = 400,
+      precision = 60 / 2, // touch events boundaries ( 60px by default )
+      tapNum = 0,
+      currX, currY, cachedX, cachedY, tapTimer;
+  
+    //setting the events listeners
+    setListener('touchstart', function(e) {
+      if (e.target.ownerDocument !== content.document) return;
+
+      var pointer = getPointerEvent(e);
+      // caching the current x
+      cachedX = currX = pointer.clientX;
+      // caching the current y
+      cachedY = currY = pointer.clientY;
+      // a touch event is detected
+      touchStarted = true;
+      tapNum++;
+      // detecting if after 200ms the finger is still in the same position
+      e.target.ownerDocument.defaultView.clearTimeout(tapTimer);
+      tapTimer = e.target.ownerDocument.defaultView.setTimeout(function() {
+        if (
+        cachedX >= currX - precision && cachedX <= currX + precision && cachedY >= currY - precision && cachedY <= currY + precision && !touchStarted) {
+          // Here you get the Tap event
+          sendEvent(e.target, (tapNum === 2) ? 'dbltap' : 'tap', e);
+        }
+        tapNum = 0;
+      }, taptreshold);
+  
+    });
+    setListener('touchend touchcancel', function(e) {
+      if (e.target.ownerDocument !== content.document) return;
+
+      var eventsArr = [],
+        deltaY = cachedY - currY,
+        deltaX = cachedX - currX;
+      touchStarted = false;
+      if (deltaX <= -swipeTreshold) eventsArr.push('swiperight');
+  
+      if (deltaX >= swipeTreshold) eventsArr.push('swipeleft');
+  
+      if (deltaY <= -swipeTreshold) eventsArr.push('swipedown');
+  
+      if (deltaY >= swipeTreshold) eventsArr.push('swipeup');
+      if (eventsArr.length) {
+        for (var i = 0; i < eventsArr.length; i++) {
+          var eventName = eventsArr[i];
+          sendEvent(e.target, eventName, e, {
+            distance: {
+              x: Math.abs(deltaX),
+              y: Math.abs(deltaY)
+            }
+          });
+        }
+      }
+    });
+    setListener('touchmove', function(e) {
+      if (e.target.ownerDocument !== content.document) return;
+
+      var pointer = getPointerEvent(e);
+      currX = pointer.clientX;
+      currY = pointer.clientY;
+    });
+  }(onTouchEvent));
 }
 
 function injectCss(doc) {
@@ -311,13 +403,13 @@ function injectCss(doc) {
 }\n\
 .caret.end {\n\
 	border-left: 0 solid transparent;  /* left arrow slant */\n\
-	border-right: 25px solid transparent; /* right arrow slant */\n\
+	border-right: 50px solid transparent; /* right arrow slant */\n\
 	margin-left: 0; /* in the middle */\n\
 }\n\
 .caret.start {\n\
-	border-left: 25px solid transparent;  /* left arrow slant */\n\
+	border-left: 50px solid transparent;  /* left arrow slant */\n\
 	border-right: 0 solid transparent; /* right arrow slant */\n\
-	margin-left: -25px; /* in the middle */\n\
+	margin-left: -50px; /* in the middle */\n\
 }';
 	
 	var el = doc.createElement('style');
@@ -352,7 +444,7 @@ function createCaretHandler(win, doc, sendContentEvent) {
       var e = self._el = doc.createElement('div');
       e.classList.add('caret');
       e.classList.add(handleType.toLowerCase());
-      doc.body.appendChild(e);
+      doc.body.parentNode.insertBefore(e, doc.body);
       
       e.addEventListener('touchstart', function(ev) {
         if (ev.touches.length !== 1) return;
@@ -363,7 +455,8 @@ function createCaretHandler(win, doc, sendContentEvent) {
           x: 0, // ev.touches[0].pageX - ev.touches[0].target.offsetLeft,
           y: (ev.touches[0].pageY - ev.touches[0].target.offsetTop)
         };
-        dump('Started touchstart offset is ' + JSON.stringify(self._startOffset) + '\n');
+        
+        return false;
       });
 
       e.addEventListener('touchmove', function(ev) {
@@ -481,7 +574,6 @@ function createCaretHandler(win, doc, sendContentEvent) {
   
   // Communication layer from Android -> UI
   var onMessageFromJava = function(msg) {
-    dump('onMessageFromJava ' + JSON.stringify(msg) + '\n');
     switch (msg.type) {
       case 'TextSelection:ShowHandles':
         if (!msg.handles) {

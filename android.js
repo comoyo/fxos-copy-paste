@@ -69,15 +69,16 @@ var SelectionHandler = {
   },
 
   observe: function sh_observe(aSubject, aTopic, aData) {
-    dump('Observe ' + aTopic + ': ' + JSON.stringify(aData) + '\n');
+    dump('Observe ' + aTopic + ' ' + (aData && JSON.stringify(aData)) + '\n')
     switch (aTopic) {
       case "Gesture:SingleTap": {
         if (this._activeType == this.TYPE_SELECTION) {
           let data = JSON.parse(aData);
           if (this._pointInSelection(data.x, data.y))
             this.copySelection();
-          else
+          else {
             this._closeSelection();
+          }
         } else if (this._activeType == this.TYPE_CURSOR) {
           // attachCaret() is called in the "Gesture:SingleTap" handler in BrowserEventHandler
           // We're guaranteed to call this first, because this observer was added last
@@ -159,6 +160,7 @@ var SelectionHandler = {
       // We only add keydown and blur listeners for TYPE_CURSOR
       case "keydown":
       case "blur":
+        dump(aEvent.type + ' called closes selection\n');
         this._closeSelection();
         break;
 
@@ -209,6 +211,7 @@ var SelectionHandler = {
 
     // If selected text no longer exists, close
     if (!aSelection.toString()) {
+      dump('No Selection is here anymore!\n')
       this._closeSelection();
     }
   },
@@ -221,6 +224,7 @@ var SelectionHandler = {
    * @param aX, aY tap location in client coordinates.
    */
   startSelection: function sh_startSelection(aElement, aX, aY) {
+    dump('StartSelection called closes selection\n');
     // Clear out any existing active selection
     this._closeSelection();
 
@@ -277,6 +281,7 @@ var SelectionHandler = {
     catch (ex) {}
     // Do not select text far away from where the user clicked
     if (distance > maxSelectionDistance) {
+      dump('distance>maxSelection called closes selection\n');
       this._closeSelection();
       return;
     }
@@ -377,12 +382,13 @@ var SelectionHandler = {
     // in editable targets. We should factor out the logic that's currently in _sendMouseEvents.
     let viewOffset = this._getViewOffset();
     let caretPos = this._contentWindow.document.caretPositionFromPoint(aX - viewOffset.x, aY - viewOffset.y);
+    
     dump('caretPos ' + JSON.stringify({
-      isBegin: aIsStartHandle,
-      node: caretPos.offsetNode && caretPos.offsetNode.outerHTML && caretPos.offsetNode.outerHTML.substr(0, 100),
-      offset: caretPos.offset,
       aX: aX,
-      aY: aY
+      aY: aY,
+      on: caretPos.offsetNode && caretPos.offsetNode.outerHTML && caretPos.offsetNode.outerHTML.substr(0, 100),
+      offset: caretPos.offset,
+      viewOffset: viewOffset
     }) + '\n');
 
     // Constrain text selection within editable elements.
@@ -505,6 +511,7 @@ var SelectionHandler = {
       clipboard.copyString(selectedText, this._contentWindow.document);
       NativeWindow.toast.show(Strings.browser.GetStringFromName("selectionHelper.textCopied"), "short");
     }
+    dump('CopySelection called closes selection\n');
     this._closeSelection();
   },
 
@@ -516,6 +523,7 @@ var SelectionHandler = {
         text: selectedText
       });
     }
+    dump('ShareSelection called closes selection\n');
     this._closeSelection();
   },
 
