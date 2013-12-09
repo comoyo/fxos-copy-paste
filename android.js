@@ -69,7 +69,7 @@ var SelectionHandler = {
   },
 
   observe: function sh_observe(aSubject, aTopic, aData) {
-    dump('Observe ' + aTopic + ' ' + (aData && JSON.stringify(aData)) + '\n')
+    dump('Observe ' + aTopic + '\n');
     switch (aTopic) {
       case "Gesture:SingleTap": {
         if (this._activeType == this.TYPE_SELECTION) {
@@ -507,9 +507,17 @@ var SelectionHandler = {
   copySelection: function sh_copySelection() {
     let selectedText = this._getSelectedText();
     if (selectedText.length) {
-      let clipboard = Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
-      clipboard.copyString(selectedText, this._contentWindow.document);
-      NativeWindow.toast.show(Strings.browser.GetStringFromName("selectionHelper.textCopied"), "short");
+      try {
+        let clipboard = Components.classes["@mozilla.org/widget/clipboardhelper;1"]
+                           .getService(Components.interfaces.nsIClipboardHelper);
+        clipboard.copyString(selectedText, this._contentWindow.document);
+      }
+      catch (ex) {
+        dump('Clipboard copyString failed ' + ex + '\n');
+      }
+      if (typeof NativeWindow !== 'undefined') {
+        NativeWindow.toast.show(Strings.browser.GetStringFromName("selectionHelper.textCopied"), "short");
+      }
     }
     dump('CopySelection called closes selection\n');
     this._closeSelection();

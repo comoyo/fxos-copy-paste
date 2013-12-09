@@ -181,14 +181,6 @@ var BrowserApp = {
   }
 };
 
-var NativeWindow = {
-  toast: {
-    show: function(a, b) {
-      dump('NativeWindow.toast.show ' + JSON.stringify([a,b]) + '\n');
-    }
-  }
-};
-
 /**
  * SelectionHandler calls this if it wants to update the UI state
  */
@@ -223,8 +215,6 @@ function selectionGlue() {
     
     if (element.ownerDocument !== content.document) return;
     if (element.ownerDocument.hidden) return;
-    
-    dump('onTap happened\n');
 
     // on real device for some reason the div inside the textbox is the target
     if (element.classList.contains('anonymous-div')) {
@@ -245,12 +235,16 @@ function selectionGlue() {
       }, POSITION_HANDLE_TIMING); // make sure the browser sets selection first
     }
 
+    if (e.target.style.MozUserSelect === 'none') {
+      return;
+    }
+
     // Broadcast the SingleTap event
     // The thing is that we don't really comply with Android so we have our
     // custom handler here... That doesn't copy on click f.e.
     if (SelectionHandler._activeType == SelectionHandler.TYPE_SELECTION) {
-      if (!this._pointInSelection(e.clientX, e.clientY)) {
-        this._closeSelection();
+      if (!SelectionHandler._pointInSelection(e.clientX, e.clientY)) {
+        SelectionHandler._closeSelection();
       }
     } else if (SelectionHandler._activeType == SelectionHandler.TYPE_CURSOR) {
       // attachCaret() is called in the "Gesture:SingleTap" handler in BrowserEventHandler
@@ -259,28 +253,33 @@ function selectionGlue() {
     }
   }
   
-  // addEventListener('click', function(e) {
-
-  // }, true, false);
-  
-
-  // createDoubleTapHandler(function(e) {
   function onDblTap(e) {
     if (e.target.ownerDocument !== content.document) return;
     if (e.target.ownerDocument.hidden) return;
-
-    e.originalEvent.stopPropagation();
-    e.originalEvent.preventDefault();
     
-    dump('onDblTap happened\n');
-
     // @todo find out if there are other listeners to this event or something
     glue.attachContentWindow(e.target.ownerDocument.defaultView);
     
     if (SelectionHandler.canSelect(e.target)) {
+      if (e.originalEvent) {
+        e.originalEvent.stopPropagation();
+        e.originalEvent.preventDefault();
+      }
+
       SelectionHandler.startSelection(e.target, e.clientX, e.clientY);
     }
   }
+  
+  // This is for FF nightly where doubletap doesnt work nice
+  addEventListener('contextmenu', function(e) {
+    if (e.target.ownerDocument !== content.document ||
+        e.target.ownerDocument.hidden)
+      return;
+    
+    e.originalEvent = e;
+    
+    onDblTap(e);
+  }, true, false);
   
   // This part has been based of https://github.com/GianlucaGuarini/Tocca.js
   // It's MIT licensed. Should be replaced by Gesture:* events from TabChild.cpp
@@ -320,6 +319,7 @@ function selectionGlue() {
     //setting the events listeners
     setListener('touchstart', function(e) {
       if (e.target.ownerDocument !== content.document) return;
+      if (!TAP_ENABLED) return;
 
       var pointer = getPointerEvent(e);
       // caching the current x
@@ -343,6 +343,7 @@ function selectionGlue() {
     });
     setListener('touchend touchcancel', function(e) {
       if (e.target.ownerDocument !== content.document) return;
+      if (!TAP_ENABLED) return;
 
       var eventsArr = [],
         deltaY = cachedY - currY,
@@ -410,6 +411,29 @@ function injectCss(doc) {
 	border-left: 50px solid transparent;  /* left arrow slant */\n\
 	border-right: 0 solid transparent; /* right arrow slant */\n\
 	margin-left: -50px; /* in the middle */\n\
+}\n\
+\n\
+#cp-action {\n\
+  background: #3cb371;\n\
+  overflow: hidden;\n\
+  position: absolute;\n\
+  border: solid 1px #006400;\n\
+  z-index: 1000000;\n\
+  -moz-user-focus: ignore;\n\
+  -moz-user-select: none;\n\
+}\n\
+#cp-action > div {\n\
+    float: left;\n\
+    text-align: center;\n\
+    padding: 0.3rem 0.5rem;\n\
+    border-left: solid 1px #006400;\n\
+    -moz-user-select: none;\n\
+}\n\
+#cp-action > div:first-child {\n\
+    border-left: none;\n\
+}\n\
+#cp-action *[data-hidden], #cp-action[data-hidden] {\n\
+    display: none;\n\
 }';
 	
 	var el = doc.createElement('style');
@@ -424,7 +448,87 @@ function createCaretHandler(win, doc, sendContentEvent) {
         return JSON.stringify(a, null, 4);
       }).join(' ') + '\n');
   }
-  var LAST_ID;
+  
+  function BoxCopyPaste() {
+    var self = this;
+    
+    this.container = null;
+    this.copyCtrl = null;
+    this.cutCtrl = null;
+    this.pasteCtrl = null;
+    
+    this.init = function() {
+      var c = this.container = doc.createElement('div');
+      c.id = 'cp-action';
+      c.innerHTML = '\n\
+        <div class="cut">Cut</div>\n\
+        <div class="copy">Copy</div>\n\
+        <div class="paste">Paste</div>';
+      
+      this.copyCtrl = c.querySelector('.copy');
+      this.cutCtrl = c.querySelector('.cut');
+      this.pasteCtrl = c.querySelector('.paste');
+      
+      doc.body.insertBefore(c, doc.body.firstChild);
+      
+      this.copyCtrl.addEventListener('click', self.onCopy);
+      this.cutCtrl.addEventListener('click', self.onCut);
+      this.pasteCtrl.addEventListener('click', self.onPaste);
+      
+      self.hide();
+    };
+
+    this.hide = function() {
+      self.container.dataset.hidden = true;
+    };
+
+    this.show = function(cut, copy, paste) {
+      self.container.removeAttribute('data-hidden');
+      
+      cut ? self.cutCtrl.removeAttribute('data-hidden') : self.cutCtrl.dataset.hidden = true;      
+      copy ? self.copyCtrl.removeAttribute('data-hidden') : self.copyCtrl.dataset.hidden = true;      
+      paste ? self.pasteCtrl.removeAttribute('data-hidden') : self.pasteCtrl.dataset.hidden = true;      
+    };
+    
+    this.onCut = function(e) {
+      if (!SelectionHandler._targetElement instanceof Ci.nsIDOMNSEditableElement) {
+        return dump('current element is not editable\n');
+      }
+
+      let target = SelectionHandler._targetElement.QueryInterface(Ci.nsIDOMNSEditableElement);
+      target.editor.cut(Ci.nsIClipboard.kGlobalClipboard);
+
+      e.stopPropagation();
+      e.preventDefault();
+    };
+    
+    this.onCopy = function(e) {
+      SelectionHandler.copySelection();
+
+      e.stopPropagation();
+      e.preventDefault();
+    };
+    
+    this.onPaste = function(e) {
+      if (!SelectionHandler._targetElement instanceof Ci.nsIDOMNSEditableElement) {
+        return dump('current element is not editable\n');
+      }
+
+      let target = SelectionHandler._targetElement.QueryInterface(Ci.nsIDOMNSEditableElement);
+      target.editor.paste(Ci.nsIClipboard.kGlobalClipboard);
+      // target.focus();
+
+      e.stopPropagation();
+      e.preventDefault();
+    };
+    
+    this.setPosition = function(x, y) {
+      self.container.style.left = (x - (self.container.offsetWidth / 2)) + 'px';
+      self.container.style.top = y + 'px';
+    };
+    
+    this.init();
+  }
 
   /**
    * Handle class, for now its only MIDDLE but we can also make this for
@@ -435,6 +539,7 @@ function createCaretHandler(win, doc, sendContentEvent) {
 
     this._el = null;
     this._startOffset = null;
+    this._pos = [0, 0];
 
     /**
      * Create caret element (should not be done in content window, but yeah)
@@ -444,7 +549,7 @@ function createCaretHandler(win, doc, sendContentEvent) {
       var e = self._el = doc.createElement('div');
       e.classList.add('caret');
       e.classList.add(handleType.toLowerCase());
-      doc.body.parentNode.insertBefore(e, doc.body);
+      doc.body.insertBefore(e, doc.body.firstChild);
       
       e.addEventListener('touchstart', function(ev) {
         if (ev.touches.length !== 1) return;
@@ -496,6 +601,16 @@ function createCaretHandler(win, doc, sendContentEvent) {
       // debug('setPosition', handleType, x, y);
       self._el.style.left = x + 'px';
       self._el.style.top = y + 'px';
+      
+      self._pos = [x, y];
+    };
+    
+    this.getPosition = function() {
+      return self._pos;
+    };
+    
+    this.isVisible = function() {
+      return !('hidden' in self._el.dataset);
     };
     
     this.calculateXY = function(e) {
@@ -572,6 +687,8 @@ function createCaretHandler(win, doc, sendContentEvent) {
     'END': new Handle('END')
   };
   
+  var boxCP = new BoxCopyPaste();
+  
   // Communication layer from Android -> UI
   var onMessageFromJava = function(msg) {
     switch (msg.type) {
@@ -582,6 +699,16 @@ function createCaretHandler(win, doc, sendContentEvent) {
         msg.handles.forEach(function(n) {
           handles[n].show();
         });
+        
+        if (msg.handles.length === 1 && msg.handles[0] === 'MIDDLE') {
+          // @todo find out if we have anything on clipboard
+          boxCP.show(false, false, true);
+        }
+        else {
+          // @todo find out if this is an input field or not...
+          var cutPaste = SelectionHandler._targetElement instanceof Ci.nsIDOMNSEditableElement;
+          boxCP.show(cutPaste, true, cutPaste);
+        }
         break;
       case 'TextSelection:HideHandles':
         if (!msg.handles) {
@@ -590,6 +717,8 @@ function createCaretHandler(win, doc, sendContentEvent) {
         msg.handles.forEach(function(n) {
           handles[n].hide();
         });
+        
+        boxCP.hide();
         break;
       case 'TextSelection:PositionHandles':
         if (msg.rtl) {
@@ -602,6 +731,22 @@ function createCaretHandler(win, doc, sendContentEvent) {
           handle.setPosition(pos.left, pos.top);
           pos.hidden ? handle.hide() : handle.show();
         });
+        
+        // @todo, use real lineHeight
+        var lineHeight = 50; // in px.
+        if (handles['MIDDLE'].isVisible()) {
+          let [x, y] = handles['MIDDLE'].getPosition();
+          y -= lineHeight;
+          boxCP.setPosition(x, y);
+        }
+        else if (handles['START'].isVisible() && handles['END'].isVisible()) {
+          let [startX, startY] = handles['START'].getPosition();
+          let [endX, endY] = handles['END'].getPosition();
+          
+          var x = (startX + endX) / 2;
+          var y = startY - lineHeight;
+          boxCP.setPosition(x, y);
+        }
         break;
     }
   };
